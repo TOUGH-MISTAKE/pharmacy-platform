@@ -1,5 +1,6 @@
 import Link from "next/link";
 import {
+  Apple,
   Baby,
   HeartPulse,
   Leaf,
@@ -8,6 +9,7 @@ import {
   Sparkles,
   Stethoscope,
   Thermometer,
+  Wind,
   type LucideIcon,
 } from "lucide-react";
 import { createPublicClient } from "@/lib/supabase/public";
@@ -27,6 +29,8 @@ const ICONS: Record<string, LucideIcon> = {
   "first-aid": Stethoscope,
   "baby-mum": Baby,
   "personal-care": Smile,
+  "cold-flu-allergy": Wind,
+  "digestive-health": Apple,
 };
 
 const FALLBACK_CATEGORIES: Category[] = [

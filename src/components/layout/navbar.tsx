@@ -1,6 +1,7 @@
 import Link from "next/link";
-import { MapPin, Phone, Search, ShoppingCart } from "lucide-react";
+import { MapPin, Phone, Search } from "lucide-react";
 import { Logo } from "@/components/brand/logo";
+import { CartButton } from "@/components/cart/cart-button";
 import { MobileMenu } from "@/components/layout/mobile-menu";
 import { UserMenu } from "@/components/layout/user-menu";
 import { Button, buttonVariants } from "@/components/ui/button";
@@ -71,13 +72,7 @@ export function Navbar() {
             <MapPin className="h-4 w-4" />
             Find a branch
           </Link>
-          <Link
-            href="/cart"
-            aria-label="Shopping cart"
-            className={buttonVariants({ variant: "ghost", size: "icon" })}
-          >
-            <ShoppingCart className="h-5 w-5" />
-          </Link>
+          <CartButton />
           <UserMenu />
         </nav>
       </div>
