@@ -1,0 +1,41 @@
+
+/* ===================================================================
+   SIMILIFE PHARMACY BRAND THEME (appended to globals.css)
+   Brand teal comes from the logo (#049896). Buttons use a slightly
+   deeper teal so white text stays easy to read.
+   =================================================================== */
+:root {
+  --radius: 0.75rem;
+  --background: #fbfdfd;
+  --foreground: #0f2b2a;
+  --card: #ffffff;
+  --card-foreground: #0f2b2a;
+  --popover: #ffffff;
+  --popover-foreground: #0f2b2a;
+  --primary: #14857f;
+  --primary-foreground: #ffffff;
+  --secondary: #e3f4f2;
+  --secondary-foreground: #0f4a47;
+  --muted: #eef6f5;
+  --muted-foreground: #4b6564;
+  --accent: #e3f4f2;
+  --accent-foreground: #0f4a47;
+  --border: #d9e8e6;
+  --input: #d9e8e6;
+  --ring: #1fa39b;
+}
+
+@theme inline {
+  --font-sans: var(--font-jakarta), ui-sans-serif, system-ui, sans-serif;
+  --color-brand-50: #effaf9;
+  --color-brand-100: #d5f2ef;
+  --color-brand-200: #aee5e0;
+  --color-brand-300: #7bd2cb;
+  --color-brand-400: #46b9b1;
+  --color-brand-500: #1fa39b;
+  --color-brand-600: #14857f;
+  --color-brand-700: #146a66;
+  --color-brand-800: #145552;
+  --color-brand-900: #134745;
+  --color-brand-950: #072a29;
+}
