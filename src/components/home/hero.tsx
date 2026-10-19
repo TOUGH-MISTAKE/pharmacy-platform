@@ -43,7 +43,7 @@ export function Hero() {
             Pharmacist-verified prescriptions
           </span>
 
-          <h1 className="mt-5 text-4xl font-extrabold leading-tight tracking-tight text-brand-900 sm:text-5xl lg:text-6xl">
+          <h1 className="mt-5 text-balance text-4xl font-extrabold leading-tight tracking-tight text-brand-900 sm:text-5xl lg:text-6xl">
             Advancing everyday health,{" "}
             <span className="text-brand-600">delivered to you.</span>
           </h1>

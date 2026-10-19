@@ -1,7 +1,8 @@
 import Link from "next/link";
-import { MapPin, Phone, Search, ShoppingCart, User } from "lucide-react";
+import { MapPin, Phone, Search, ShoppingCart } from "lucide-react";
 import { Logo } from "@/components/brand/logo";
 import { MobileMenu } from "@/components/layout/mobile-menu";
+import { UserMenu } from "@/components/layout/user-menu";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
@@ -77,13 +78,7 @@ export function Navbar() {
           >
             <ShoppingCart className="h-5 w-5" />
           </Link>
-          <Link
-            href="/login"
-            className={cn(buttonVariants(), "rounded-full px-4")}
-          >
-            <User className="h-4 w-4" />
-            Sign in
-          </Link>
+          <UserMenu />
         </nav>
       </div>
 
