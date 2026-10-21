@@ -1,11 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { format } from "date-fns";
 import { ArrowLeft, Check, CircleAlert, Info, LoaderCircle, MapPin, Phone } from "lucide-react";
 import { toast } from "sonner";
+import { MpesaPayPanel } from "@/components/orders/mpesa-pay-panel";
 import { OrderStatusBadge } from "@/components/orders/status-badge";
 import { StatusBadge as PrescriptionStatusBadge } from "@/components/prescriptions/status-badge";
 import { Button, buttonVariants } from "@/components/ui/button";
@@ -62,6 +63,15 @@ interface OrderDetailRow {
     quantity: number;
     line_total: number | string;
   }[];
+  payments:
+    | {
+        id: string;
+        status: PaymentStatus;
+        result_desc: string | null;
+        mpesa_receipt_number: string | null;
+        created_at: string;
+      }[]
+    | null;
 }
 
 export function OrderDetail({ orderId }: { orderId: string }) {
@@ -72,12 +82,13 @@ export function OrderDetail({ orderId }: { orderId: string }) {
   const query = useQuery({
     queryKey: ["order", orderId, userId],
     enabled: Boolean(userId),
-    refetchInterval: 20_000,
+    refetchInterval: (currentQuery) =>
+      currentQuery.state.data?.payment_status === "processing" ? 4000 : 20_000,
     queryFn: async (): Promise<OrderDetailRow | null> => {
       const { data, error } = await createClient()
         .from("orders")
         .select(
-          "id, order_number, status, fulfilment_type, delivery_address, subtotal, discount_total, delivery_fee, total, payment_method, payment_status, notes, created_at, branch:branches(name, address, town, phone), prescription:prescriptions(id, status), order_items(id, product_name, unit_price, quantity, line_total)"
+          "id, order_number, status, fulfilment_type, delivery_address, subtotal, discount_total, delivery_fee, total, payment_method, payment_status, notes, created_at, branch:branches(name, address, town, phone), prescription:prescriptions(id, status), order_items(id, product_name, unit_price, quantity, line_total), payments(id, status, result_desc, mpesa_receipt_number, created_at)"
         )
         .eq("id", orderId)
         .eq("patient_id", userId ?? "")
@@ -112,6 +123,19 @@ export function OrderDetail({ orderId }: { orderId: string }) {
       void queryClient.invalidateQueries({ queryKey: ["order", orderId] });
     },
   });
+
+  const previousPaymentStatus = useRef<PaymentStatus | null>(null);
+  const currentPaymentStatus = query.data?.payment_status ?? null;
+  useEffect(() => {
+    if (
+      previousPaymentStatus.current &&
+      previousPaymentStatus.current !== "paid" &&
+      currentPaymentStatus === "paid"
+    ) {
+      toast.success("Payment received. Thank you!");
+    }
+    previousPaymentStatus.current = currentPaymentStatus;
+  }, [currentPaymentStatus]);
 
   if (authLoading || query.isLoading) {
     return (
@@ -156,6 +180,13 @@ export function OrderDetail({ orderId }: { orderId: string }) {
   const closed = order.status === "cancelled" || order.status === "refunded";
   const cancellable = canCancelOrder(order.status, order.payment_status);
   const address = order.delivery_address;
+  const latestPayment =
+    [...(order.payments ?? [])].sort(
+      (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+    )[0] ?? null;
+  const receiptNumber =
+    (order.payments ?? []).find((payment) => payment.mpesa_receipt_number)?.mpesa_receipt_number ??
+    null;
 
   return (
     <div>
@@ -218,13 +249,29 @@ export function OrderDetail({ orderId }: { orderId: string }) {
         </div>
       ) : null}
 
-      {order.status === "pending_payment" ? (
+      {order.status === "pending_payment" && order.payment_method === "mpesa" ? (
+        <div className="mt-4">
+          <MpesaPayPanel
+            orderId={order.id}
+            amount={Math.round(Number(order.total))}
+            paymentStatus={order.payment_status}
+            lastFailureReason={
+              latestPayment && (latestPayment.status === "failed" || latestPayment.status === "cancelled")
+                ? latestPayment.result_desc
+                : null
+            }
+            lastAttemptAt={latestPayment?.created_at ?? null}
+          />
+        </div>
+      ) : null}
+
+      {order.status === "pending_payment" && order.payment_method === "card" ? (
         <div className="mt-4 flex gap-3 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
           <Info className="mt-0.5 h-5 w-5 shrink-0" />
           <p>
-            Your order is placed and your stock is reserved. Online payment with{" "}
-            {PAYMENT_METHOD_LABELS[order.payment_method]} is being switched on, and the Pay button
-            will appear here as soon as it is ready.
+            Your order is placed and your stock is reserved. Card payment is being switched on, and
+            the Pay button will appear here as soon as it is ready. You can also cancel and choose
+            M-Pesa instead.
           </p>
         </div>
       ) : null}
@@ -322,6 +369,12 @@ export function OrderDetail({ orderId }: { orderId: string }) {
                 <dt className="text-muted-foreground">Status</dt>
                 <dd className="font-semibold">{PAYMENT_STATUS_LABELS[order.payment_status]}</dd>
               </div>
+              {receiptNumber ? (
+                <div className="flex justify-between">
+                  <dt className="text-muted-foreground">M-Pesa receipt</dt>
+                  <dd className="font-semibold">{receiptNumber}</dd>
+                </div>
+              ) : null}
             </dl>
           </section>
 
