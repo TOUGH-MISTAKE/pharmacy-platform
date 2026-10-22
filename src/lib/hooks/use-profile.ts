@@ -11,6 +11,7 @@ export interface Profile {
   full_name: string;
   phone: string | null;
   role: UserRole;
+  branch_id: string | null;
 }
 
 export function useProfile() {
@@ -23,7 +24,7 @@ export function useProfile() {
       if (!userId) return null;
       const { data, error } = await createClient()
         .from("profiles")
-        .select("id, full_name, phone, role")
+        .select("id, full_name, phone, role, branch_id")
         .eq("id", userId)
         .maybeSingle();
       if (error) throw new Error(error.message);

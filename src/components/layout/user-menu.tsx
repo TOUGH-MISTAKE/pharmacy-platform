@@ -122,7 +122,8 @@ export function UserMenu() {
   const initial = displayName.charAt(0).toUpperCase();
   const role = profile?.role ?? "patient";
   const isPharmacist = role === "pharmacist" || role === "admin";
-  const isStaffDashboardUser = role === "admin" || role === "branch_manager";
+  const isStaffDashboardUser =
+    role === "admin" || role === "branch_manager" || role === "pharmacist";
 
   const menuLinkClass =
     "flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-foreground hover:bg-brand-50";

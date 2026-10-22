@@ -1,0 +1,309 @@
+-- =====================================================================
+-- SIMILIFE PHARMACY : STAFF TOOLS (Part 1)
+-- Run ONCE in Supabase SQL Editor. Adds:
+--   1. staff_advance_order()  : the only way staff move an order along
+--   2. stock_adjustments log  : every stock change, who and why
+--   3. adjust_stock() / set_reorder_level() : the only way staff change inventory
+-- =====================================================================
+
+-- ---------------------------------------------------------------------
+-- 1. Order guard: allow our own trusted functions to bypass it
+-- ---------------------------------------------------------------------
+create or replace function public.orders_guard()
+returns trigger
+language plpgsql security definer set search_path = public
+as $$
+declare
+  v_uid uuid := auth.uid();
+begin
+  -- service role / SQL editor / Edge Functions: unrestricted
+  if v_uid is null then
+    return new;
+  end if;
+
+  -- set inside staff_advance_order() only; clients cannot set this value
+  if coalesce(current_setting('app.orders_guard_bypass', true), '') = 'on' then
+    return new;
+  end if;
+
+  if new.patient_id       is distinct from old.patient_id
+     or new.order_number    is distinct from old.order_number
+     or new.branch_id       is distinct from old.branch_id
+     or new.fulfilment_type is distinct from old.fulfilment_type
+     or new.delivery_address is distinct from old.delivery_address
+     or new.subtotal        is distinct from old.subtotal
+     or new.discount_total  is distinct from old.discount_total
+     or new.delivery_fee    is distinct from old.delivery_fee
+     or new.total           is distinct from old.total
+     or new.discount_id     is distinct from old.discount_id
+     or new.prescription_id is distinct from old.prescription_id
+     or new.payment_method  is distinct from old.payment_method
+     or new.payment_status  is distinct from old.payment_status then
+    raise exception 'Order identity and financial fields are read-only';
+  end if;
+
+  if new.status is distinct from old.status then
+    if public.is_staff() then
+      if old.status in ('cancelled', 'refunded') then
+        raise exception 'A closed order cannot be reopened';
+      end if;
+
+      if new.status in ('confirmed', 'packing', 'ready_for_pickup', 'out_for_delivery', 'completed')
+         and old.payment_method <> 'cash_on_pickup'
+         and old.payment_status <> 'paid' then
+        raise exception 'This order has not been paid';
+      end if;
+
+      if old.status = 'awaiting_verification' then
+        if new.status not in ('pending_payment', 'confirmed', 'cancelled') then
+          raise exception 'This order is awaiting prescription verification';
+        end if;
+        if new.status in ('pending_payment', 'confirmed')
+           and not exists (
+             select 1 from public.prescriptions rx
+             where rx.id = old.prescription_id and rx.status = 'approved'
+           ) then
+          raise exception 'The prescription must be approved first';
+        end if;
+      end if;
+    else
+      if not (
+        old.status in ('pending_payment', 'awaiting_verification')
+        and new.status = 'cancelled'
+        and old.payment_status in ('pending', 'failed', 'cancelled')
+      ) then
+        raise exception 'You can only cancel an order that has not been paid';
+      end if;
+    end if;
+  end if;
+
+  return new;
+end;
+$$;
+
+-- ---------------------------------------------------------------------
+-- 2. staff_advance_order : move an order to its next step
+-- ---------------------------------------------------------------------
+create or replace function public.staff_advance_order(
+  p_order_id   uuid,
+  p_new_status public.order_status
+)
+returns public.order_status
+language plpgsql security definer set search_path = public
+as $$
+declare
+  v_order   public.orders%rowtype;
+  v_allowed boolean;
+begin
+  if auth.uid() is null then
+    raise exception 'Authentication required';
+  end if;
+
+  select * into v_order from public.orders where id = p_order_id for update;
+  if not found then
+    raise exception 'Order not found';
+  end if;
+
+  if not public.staff_can_access_branch(v_order.branch_id) then
+    raise exception 'You do not have access to this branch';
+  end if;
+
+  if v_order.status = p_new_status then
+    return v_order.status;
+  end if;
+
+  v_allowed := case v_order.status
+    when 'pending_payment'        then p_new_status = 'cancelled'
+    when 'awaiting_verification'  then p_new_status = 'cancelled'
+    when 'confirmed'              then p_new_status in ('packing', 'cancelled')
+    when 'packing'                then (p_new_status = 'ready_for_pickup' and v_order.fulfilment_type = 'pickup')
+                                    or (p_new_status = 'out_for_delivery' and v_order.fulfilment_type = 'delivery')
+                                    or p_new_status = 'cancelled'
+    when 'ready_for_pickup'       then p_new_status = 'completed'
+    when 'out_for_delivery'       then p_new_status = 'completed'
+    else false
+  end;
+
+  if not coalesce(v_allowed, false) then
+    raise exception 'An order that is "%" cannot be moved to "%"', v_order.status, p_new_status;
+  end if;
+
+  if p_new_status = 'cancelled' and v_order.payment_status = 'paid' then
+    raise exception 'This order has been paid. Please refund the customer first (ask an admin).';
+  end if;
+
+  if p_new_status = 'cancelled' and v_order.payment_status = 'processing' then
+    raise exception 'A payment is in progress for this order. Please wait for it to finish.';
+  end if;
+
+  perform set_config('app.orders_guard_bypass', 'on', true);
+
+  if p_new_status = 'completed'
+     and v_order.payment_method = 'cash_on_pickup'
+     and v_order.payment_status <> 'paid' then
+    update public.orders
+       set status = p_new_status, payment_status = 'paid'
+     where id = v_order.id;
+
+    insert into public.payments (order_id, method, status, amount, paid_at, result_desc)
+    values (v_order.id, 'cash_on_pickup', 'paid', v_order.total, now(), 'Cash received at pickup');
+  else
+    update public.orders set status = p_new_status where id = v_order.id;
+  end if;
+
+  perform set_config('app.orders_guard_bypass', 'off', true);
+
+  return p_new_status;
+end;
+$$;
+
+revoke all on function public.staff_advance_order(uuid, public.order_status) from public, anon;
+grant execute on function public.staff_advance_order(uuid, public.order_status) to authenticated;
+
+-- ---------------------------------------------------------------------
+-- 3. Stock adjustment log
+-- ---------------------------------------------------------------------
+create table public.stock_adjustments (
+  id             uuid primary key default gen_random_uuid(),
+  branch_id      uuid not null references public.branches(id) on delete cascade,
+  product_id     uuid not null references public.products(id) on delete cascade,
+  delta          int not null,
+  quantity_after int not null,
+  reason         text not null check (reason in ('received', 'correction', 'damaged', 'expired', 'returned', 'opening_stock')),
+  note           text,
+  created_by     uuid references public.profiles(id) on delete set null,
+  created_at     timestamptz not null default now()
+);
+
+create index stock_adjustments_branch_idx on public.stock_adjustments (branch_id, created_at desc);
+create index stock_adjustments_product_idx on public.stock_adjustments (product_id, created_at desc);
+
+alter table public.stock_adjustments enable row level security;
+revoke all on public.stock_adjustments from anon;
+
+create policy "stock_adjustments_staff_select" on public.stock_adjustments
+  for select to authenticated
+  using (public.staff_can_access_branch(branch_id));
+
+-- ---------------------------------------------------------------------
+-- 4. adjust_stock : add or remove stock, always logged
+-- ---------------------------------------------------------------------
+create or replace function public.adjust_stock(
+  p_branch_id  uuid,
+  p_product_id uuid,
+  p_delta      int,
+  p_reason     text,
+  p_note       text default null
+)
+returns int
+language plpgsql security definer set search_path = public
+as $$
+declare
+  v_current  int;
+  v_reserved int;
+  v_new      int;
+begin
+  if auth.uid() is null then
+    raise exception 'Authentication required';
+  end if;
+  if not public.staff_can_access_branch(p_branch_id) then
+    raise exception 'You do not have access to this branch';
+  end if;
+  if p_delta is null or p_delta = 0 then
+    raise exception 'Enter a quantity other than zero';
+  end if;
+  if abs(p_delta) > 100000 then
+    raise exception 'That quantity is too large';
+  end if;
+  if p_reason not in ('received', 'correction', 'damaged', 'expired', 'returned', 'opening_stock') then
+    raise exception 'Invalid reason';
+  end if;
+  if p_reason in ('received', 'returned', 'opening_stock') and p_delta < 0 then
+    raise exception 'This reason adds stock, so the quantity must be positive';
+  end if;
+  if p_reason in ('damaged', 'expired') and p_delta > 0 then
+    raise exception 'This reason removes stock, so the quantity must be negative';
+  end if;
+  if not exists (select 1 from public.products where id = p_product_id) then
+    raise exception 'Product not found';
+  end if;
+
+  select quantity, reserved_quantity
+    into v_current, v_reserved
+    from public.branch_inventory
+   where branch_id = p_branch_id and product_id = p_product_id
+   for update;
+
+  if not found then
+    if p_delta < 0 then
+      raise exception 'There is no stock to remove';
+    end if;
+    insert into public.branch_inventory (branch_id, product_id, quantity)
+    values (p_branch_id, p_product_id, p_delta);
+    v_new := p_delta;
+  else
+    v_new := v_current + p_delta;
+    if v_new < 0 then
+      raise exception 'Not enough stock. Only % in stock.', v_current;
+    end if;
+    if v_new < v_reserved then
+      raise exception '% units are reserved for open orders, so stock cannot go below that.', v_reserved;
+    end if;
+    update public.branch_inventory
+       set quantity = v_new
+     where branch_id = p_branch_id and product_id = p_product_id;
+  end if;
+
+  insert into public.stock_adjustments (branch_id, product_id, delta, quantity_after, reason, note, created_by)
+  values (p_branch_id, p_product_id, p_delta, v_new, p_reason, nullif(btrim(coalesce(p_note, '')), ''), auth.uid());
+
+  return v_new;
+end;
+$$;
+
+revoke all on function public.adjust_stock(uuid, uuid, int, text, text) from public, anon;
+grant execute on function public.adjust_stock(uuid, uuid, int, text, text) to authenticated;
+
+-- ---------------------------------------------------------------------
+-- 5. set_reorder_level : when should we be warned that stock is low?
+-- ---------------------------------------------------------------------
+create or replace function public.set_reorder_level(
+  p_branch_id  uuid,
+  p_product_id uuid,
+  p_level      int
+)
+returns void
+language plpgsql security definer set search_path = public
+as $$
+begin
+  if auth.uid() is null then
+    raise exception 'Authentication required';
+  end if;
+  if not public.staff_can_access_branch(p_branch_id) then
+    raise exception 'You do not have access to this branch';
+  end if;
+  if p_level is null or p_level < 0 or p_level > 100000 then
+    raise exception 'Enter a reorder level of 0 or more';
+  end if;
+  if not exists (select 1 from public.products where id = p_product_id) then
+    raise exception 'Product not found';
+  end if;
+
+  insert into public.branch_inventory (branch_id, product_id, quantity, reorder_level)
+  values (p_branch_id, p_product_id, 0, p_level)
+  on conflict (branch_id, product_id) do update set reorder_level = excluded.reorder_level;
+end;
+$$;
+
+revoke all on function public.set_reorder_level(uuid, uuid, int) from public, anon;
+grant execute on function public.set_reorder_level(uuid, uuid, int) to authenticated;
+
+-- ---------------------------------------------------------------------
+-- 6. From now on, inventory can only be changed through the functions above
+-- ---------------------------------------------------------------------
+drop policy if exists "inventory_staff_insert" on public.branch_inventory;
+drop policy if exists "inventory_staff_update" on public.branch_inventory;
+
+notify pgrst, 'reload schema';
+
+select 'Staff tools installed' as result;
