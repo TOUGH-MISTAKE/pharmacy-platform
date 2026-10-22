@@ -5,7 +5,17 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { format } from "date-fns";
-import { Banknote, CreditCard, LoaderCircle, Lock, MapPin, Smartphone, Store, Truck } from "lucide-react";
+import {
+  Banknote,
+  CreditCard,
+  LoaderCircle,
+  LocateFixed,
+  Lock,
+  MapPin,
+  Smartphone,
+  Store,
+  Truck,
+} from "lucide-react";
 import { toast } from "sonner";
 import { FormAlert } from "@/components/auth/form-field";
 import { AddressForm } from "@/components/checkout/address-form";
@@ -13,6 +23,7 @@ import { textareaClass } from "@/components/prescriptions/field-styles";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { formatKes } from "@/lib/format";
+import { distanceKm, formatDistance } from "@/lib/geo";
 import { useAuthUser } from "@/lib/hooks/use-auth-user";
 import type { FulfilmentType, PaymentMethod } from "@/lib/orders/types";
 import { STATUS_LABELS, type PrescriptionStatus } from "@/lib/prescriptions/types";
@@ -33,6 +44,8 @@ interface BranchRow {
   offers_delivery: boolean;
   delivery_fee: number | string;
   free_delivery_threshold: number | string | null;
+  latitude: number | string;
+  longitude: number | string;
 }
 
 interface AddressRow {
@@ -120,6 +133,8 @@ export function CheckoutForm() {
   const [notes, setNotes] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+  const [locating, setLocating] = useState(false);
+  const [locateError, setLocateError] = useState<string | null>(null);
 
   const productIds = items.map((item) => item.productId);
 
@@ -130,7 +145,7 @@ export function CheckoutForm() {
       const { data, error } = await createClient()
         .from("branches")
         .select(
-          "id, name, town, address, offers_pickup, offers_delivery, delivery_fee, free_delivery_threshold"
+          "id, name, town, address, offers_pickup, offers_delivery, delivery_fee, free_delivery_threshold, latitude, longitude"
         )
         .eq("is_active", true)
         .order("name");
@@ -280,6 +295,53 @@ export function CheckoutForm() {
     }
   }
 
+  function handleFindNearest() {
+    setLocateError(null);
+    if (!navigator.geolocation) {
+      setLocateError("Your browser cannot share your location. Please choose a branch below.");
+      return;
+    }
+
+    setLocating(true);
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        const here = {
+          latitude: position.coords.latitude,
+          longitude: position.coords.longitude,
+        };
+
+        const ranked = branches
+          .map((branch) => ({
+            branch,
+            distance: distanceKm(here, {
+              latitude: Number(branch.latitude),
+              longitude: Number(branch.longitude),
+            }),
+            hasAllItems: availability ? (availability[branch.id] ?? 0) >= productIds.length : false,
+          }))
+          .sort((a, b) => a.distance - b.distance);
+
+        const best = ranked.find((item) => item.hasAllItems) ?? ranked[0];
+        if (best) {
+          handleBranchChange(best.branch.id);
+          toast.success(
+            best.hasAllItems
+              ? `${best.branch.name} is ${formatDistance(best.distance)} away and has all your items.`
+              : `${best.branch.name} is the nearest branch (${formatDistance(best.distance)}), but some items may be unavailable.`
+          );
+        }
+        setLocating(false);
+      },
+      () => {
+        setLocateError(
+          "We could not get your location. Please allow location access, or choose a branch below."
+        );
+        setLocating(false);
+      },
+      { enableHighAccuracy: false, timeout: 10_000, maximumAge: 60_000 }
+    );
+  }
+
   function handleFulfilmentChange(next: FulfilmentType) {
     setFulfilment(next);
     if (next === "delivery" && paymentMethod === "cash_on_pickup") {
@@ -335,6 +397,27 @@ export function CheckoutForm() {
       <div className="mt-6 grid gap-8 lg:grid-cols-[1fr_22rem] lg:items-start">
         <div className="space-y-5">
           <SectionCard number={1} title="Choose your branch">
+            <div className="mb-4">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={handleFindNearest}
+                disabled={locating || branches.length === 0}
+                className="rounded-full border-brand-300 text-brand-700 hover:bg-brand-50"
+              >
+                {locating ? (
+                  <LoaderCircle className="h-4 w-4 animate-spin" />
+                ) : (
+                  <LocateFixed className="h-4 w-4" />
+                )}
+                {locating ? "Finding you..." : "Find the nearest branch with my items"}
+              </Button>
+              {locateError ? (
+                <p role="alert" className="mt-2 text-sm text-destructive">
+                  {locateError}
+                </p>
+              ) : null}
+            </div>
             {branchesQuery.isLoading ? (
               <Skeleton className="h-24 w-full rounded-xl" />
             ) : branchesQuery.isError ? (
