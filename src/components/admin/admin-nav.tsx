@@ -17,6 +17,8 @@ const TABS: Tab[] = [
   { href: "/admin/orders", label: "Orders", roles: ["pharmacist", "branch_manager", "admin"] },
   { href: "/pharmacist", label: "Prescriptions", roles: ["pharmacist", "admin"] },
   { href: "/admin/inventory", label: "Inventory", roles: ["pharmacist", "branch_manager", "admin"] },
+  { href: "/admin/products", label: "Products", roles: ["admin"] },
+  { href: "/admin/discounts", label: "Discounts", roles: ["admin"] },
 ];
 
 export function AdminNav() {
